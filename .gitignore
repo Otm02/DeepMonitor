@@ -1,0 +1,19 @@
+# Build artifacts
+build/
+.pio/
+.vscode/.browse.c_cpp.db*
+.vscode/ipch
+
+# Secrets (copy from src/secrets.h.example)
+src/secrets.h
+
+# Python tool outputs
+tools/out/
+tools/__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
