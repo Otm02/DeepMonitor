@@ -5,8 +5,7 @@ Single firmware tree that builds for three targets: a development M5StickC Plus2
 (with onboard MPU6886 or external MPU-6050) and the production ESP32-WROOM-32E
 PCB described in the OPERATING_PLAN.
 
-> **Status:** pre-POC. Tomorrow (2026-05-17) is the first round of household-object
-> characterization captures before the Russet House field deployment.
+> **Status:** pre-POC validation stage.
 
 ---
 
@@ -15,7 +14,7 @@ PCB described in the OPERATING_PLAN.
 1. [What this is](#1-what-this-is)
 2. [Repository layout](#2-repository-layout)
 3. [Hardware targets](#3-hardware-targets)
-4. [Quick start — tomorrow's tests](#4-quick-start--tomorrows-tests)
+4. [Quick Start](#4-quick-start)
 5. [Developer setup](#5-developer-setup)
 6. [Building and flashing](#6-building-and-flashing)
 7. [Configuration and secrets](#7-configuration-and-secrets)
@@ -90,7 +89,7 @@ DeepMonitor/
 │
 ├── docs/
 │   └── tests/
-│       └── 2026-05-17-first-field-tests.md   # Tomorrow's step-by-step protocol
+│       └── 2026-05-17-first-field-tests.md   # Field-test execution protocol
 │
 ├── .kiro/specs/predictive-maintenance-sensor/
 │   ├── requirements.md             # 10 numbered requirements
@@ -104,52 +103,52 @@ DeepMonitor/
 
 ## 3. Hardware targets
 
-| Build env | Board | IMU | Battery readout | Local buffer |
-|-----------|-------|-----|-----------------|--------------|
-| `m5stickc-6886` | M5StickC Plus2 | Onboard MPU6886 (`M5.Imu`) | `M5.Power` (AXP192) | RAM (single payload) |
-| `m5stickc-6050` | M5StickC Plus2 | External MPU-6050 on Grove I²C (SDA=32, SCL=33) | `M5.Power` | RAM (single payload) |
-| `esp32-wroom-6050` | ESP32-WROOM-32E (production PCB) | External MPU-6050 on I²C (SDA=21, SCL=22) | ADC GPIO34, 1:1 divider | W25Q32 SPI flash, up to 64 entries |
+| Build env          | Board                            | IMU                                             | Battery readout         | Local buffer                       |
+| ------------------ | -------------------------------- | ----------------------------------------------- | ----------------------- | ---------------------------------- |
+| `m5stickc-6886`    | M5StickC Plus2                   | Onboard MPU6886 (`M5.Imu`)                      | `M5.Power` (AXP192)     | RAM (single payload)               |
+| `m5stickc-6050`    | M5StickC Plus2                   | External MPU-6050 on Grove I²C (SDA=32, SCL=33) | `M5.Power`              | RAM (single payload)               |
+| `esp32-wroom-6050` | ESP32-WROOM-32E (production PCB) | External MPU-6050 on I²C (SDA=21, SCL=22)       | ADC GPIO34, 1:1 divider | W25Q32 SPI flash, up to 64 entries |
 
 Target selection is via PlatformIO env (`pio run -e ...`); the rest of the
 firmware reads only the `HAS_LCD`, `HAS_M5_POWER`, `HAS_FLASH_BUFFER`, etc.
 flags from [`src/board.h`](src/board.h) and stays target-agnostic.
 
-**Tomorrow's tests use `m5stickc-6886` exclusively.** External-IMU and production
-PCB envs are present so the same firmware will run on Wensley's first PCB rev
-without code changes.
+Initial field-validation runs use `m5stickc-6886` exclusively. External-IMU and
+production PCB environments are included so the same firmware can transition to
+custom hardware without code-path divergence.
 
 ---
 
-## 4. Quick start — tomorrow's tests
+## 4. Quick Start
 
-Full protocol lives at [docs/tests/2026-05-17-first-field-tests.md](docs/tests/2026-05-17-first-field-tests.md).
-Compressed version:
+Use this section for fast project bring-up. For complete field execution and
+operator workflow, use:
+
+- [docs/tests/2026-05-17-first-field-tests.md](docs/tests/2026-05-17-first-field-tests.md)
 
 ```powershell
-# 1. Configure secrets
+# 1) Configure runtime secrets
 copy src\secrets.h.example src\secrets.h
 notepad src\secrets.h
-#   Set WIFI_SSID, WIFI_PASS to your home network.
+#   Set WIFI_SSID/WIFI_PASS
 #   Set WEBHOOK_URL = "http://<laptop-lan-ip>:8000/ingest"
-#   (Find <laptop-lan-ip> with `ipconfig` → IPv4 of the Wi-Fi adapter.)
 
-# 2. Install Python deps
+# 2) Install local tooling
 pip install -r tools\requirements.txt
 
-# 3. Start the laptop ingest server (leave running all day)
+# 3) Start local ingest receiver
 python tools\local_ingest.py
-#   Opens http://0.0.0.0:8000  → POST /ingest, GET /health
+#   Serves POST /ingest and GET /health
 
-# 4. Flash the M5StickC Plus2
+# 4) Flash firmware
 pio device list
-#   Pick the USB-Enhanced-SERIAL CH9102 port (M5StickC Plus2), not Bluetooth COM3/COM4.
+#   Use USB-Enhanced-SERIAL CH9102 (M5StickC Plus2), not Bluetooth COM3/COM4.
 pio run -e m5stickc-6886 -t upload --upload-port COM5
 
-# 5. Disconnect USB. The device runs on its own battery and posts every cycle.
-#    Watch ingest terminal for heartbeats / anomalies.
-#    Move it from desk → computer → fridge → washing machine (see the test doc).
+# 5) Optional serial diagnostics
+pio device monitor -e m5stickc-6886 --port COM5
 
-# 6. End of day — analyze
+# 6) Analyze captured payloads
 python tools\quick_analysis.py
 ```
 
@@ -165,13 +164,13 @@ python tools\battery_sim.py --output tools\out\battery_results.csv
 
 ### Prerequisites
 
-| Tool | Version | Notes |
-|------|---------|-------|
-| Python | 3.10+ | For `tools/` scripts and as PlatformIO's runtime |
-| PlatformIO | latest | VS Code extension (`platformio.platformio-ide`) or pipx install |
-| CMake | 3.14+ | For host-side test build |
-| C++ compiler | C++17 capable | MSVC, MinGW, GCC, or Clang |
-| Git | any | For `FetchContent` to pull GoogleTest + RapidCheck |
+| Tool         | Version       | Notes                                                           |
+| ------------ | ------------- | --------------------------------------------------------------- |
+| Python       | 3.10+         | For `tools/` scripts and as PlatformIO's runtime                |
+| PlatformIO   | latest        | VS Code extension (`platformio.platformio-ide`) or pipx install |
+| CMake        | 3.14+         | For host-side test build                                        |
+| C++ compiler | C++17 capable | MSVC, MinGW, GCC, or Clang                                      |
+| Git          | any           | For `FetchContent` to pull GoogleTest + RapidCheck              |
 
 ### One-time install (Windows / PowerShell)
 
@@ -263,19 +262,19 @@ build_flags =
 
 ### Tunable constants ([`src/config.h`](src/config.h))
 
-| Constant | Default | What it controls |
-|----------|---------|------------------|
-| `SLEEP_DURATION_US` | 300 000 000 (5 min) | Deep-sleep length between samples |
-| `SAMPLE_COUNT` × `SAMPLE_RATE_HZ` | 500 × 100 Hz (5 s) | Per-cycle sampling window |
-| `WINDOW_SIZE` | 16 | Sliding window of duty cycles fed to the autoencoder |
-| `LATENT_DIM` | 4 | Autoencoder bottleneck (compression 32 → 4) |
-| `ANOMALY_THRESHOLD` | 0.03 | Reconstruction-error cutoff |
-| `SMOOTHING_ALPHA` | 0.1 | EMA factor for normalizer mean/var |
-| `LR_INITIAL` / `LR_DECAY_RATE` / `LR_RESET_STREAK` | 0.01 / 0.001 / 10 | Sanger's-Rule learning rate schedule |
-| `NVS_SAVE_INTERVAL` | 288 cycles (~24 h) | Periodic flash snapshot |
-| `WEIGHT_SHIFT_THRESHOLD` | 0.5 | Triggers an NVS save on large model drift |
-| `HEARTBEAT_INTERVAL` | 144 cycles (~12 h) | Wi-Fi heartbeat cadence |
-| `WIFI_TIMEOUT_MS` | 10 000 | Per-attempt Wi-Fi connect timeout |
+| Constant                                           | Default             | What it controls                                     |
+| -------------------------------------------------- | ------------------- | ---------------------------------------------------- |
+| `SLEEP_DURATION_US`                                | 300 000 000 (5 min) | Deep-sleep length between samples                    |
+| `SAMPLE_COUNT` × `SAMPLE_RATE_HZ`                  | 500 × 100 Hz (5 s)  | Per-cycle sampling window                            |
+| `WINDOW_SIZE`                                      | 16                  | Sliding window of duty cycles fed to the autoencoder |
+| `LATENT_DIM`                                       | 4                   | Autoencoder bottleneck (compression 32 → 4)          |
+| `ANOMALY_THRESHOLD`                                | 0.03                | Reconstruction-error cutoff                          |
+| `SMOOTHING_ALPHA`                                  | 0.1                 | EMA factor for normalizer mean/var                   |
+| `LR_INITIAL` / `LR_DECAY_RATE` / `LR_RESET_STREAK` | 0.01 / 0.001 / 10   | Sanger's-Rule learning rate schedule                 |
+| `NVS_SAVE_INTERVAL`                                | 288 cycles (~24 h)  | Periodic flash snapshot                              |
+| `WEIGHT_SHIFT_THRESHOLD`                           | 0.5                 | Triggers an NVS save on large model drift            |
+| `HEARTBEAT_INTERVAL`                               | 144 cycles (~12 h)  | Wi-Fi heartbeat cadence                              |
+| `WIFI_TIMEOUT_MS`                                  | 10 000              | Per-attempt Wi-Fi connect timeout                    |
 
 For live bring-up, you can temporarily use `HEARTBEAT_INTERVAL = 1` and shorter
 sleep while testing. Restore production-like values afterward.
@@ -416,18 +415,18 @@ flowchart TD
 
 ### Module responsibilities
 
-| Module | Owns |
-|--------|------|
-| `imu` | Hardware init, 500-sample @ 100 Hz fill, vibration magnitude |
-| `normalizer` | Per-batch EMA stats, normalize, freeze-on-anomaly flag |
-| `window` | 16-entry circular buffer of `(mean_vib, mean_temp)` summaries |
-| `ml` | Autoencoder forward pass, MSE, Sanger's-Rule weight update, weight-shift metric |
-| `rtc` | RTC memory struct + CRC-16, warm/hard wake routing, deep sleep entry |
-| `persist` (`nvs.*` files) | Preferences.h save/load, time-based and weight-shift triggers |
-| `connectivity` | Wi-Fi associate, HTTP POST with optional `Authorization: Bearer`, retry counter |
-| `power` | Battery voltage abstraction (M5 / ADC / mock) |
-| `flash_buffer` | W25Q32 ring of failed payloads, drained on next successful Wi-Fi |
-| `main` | Orchestrates the duty cycle; no logic of its own |
+| Module                    | Owns                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| `imu`                     | Hardware init, 500-sample @ 100 Hz fill, vibration magnitude                    |
+| `normalizer`              | Per-batch EMA stats, normalize, freeze-on-anomaly flag                          |
+| `window`                  | 16-entry circular buffer of `(mean_vib, mean_temp)` summaries                   |
+| `ml`                      | Autoencoder forward pass, MSE, Sanger's-Rule weight update, weight-shift metric |
+| `rtc`                     | RTC memory struct + CRC-16, warm/hard wake routing, deep sleep entry            |
+| `persist` (`nvs.*` files) | Preferences.h save/load, time-based and weight-shift triggers                   |
+| `connectivity`            | Wi-Fi associate, HTTP POST with optional `Authorization: Bearer`, retry counter |
+| `power`                   | Battery voltage abstraction (M5 / ADC / mock)                                   |
+| `flash_buffer`            | W25Q32 ring of failed payloads, drained on next successful Wi-Fi                |
+| `main`                    | Orchestrates the duty cycle; no logic of its own                                |
 
 ### Memory budget
 
@@ -439,7 +438,7 @@ No `new`/`malloc`/`String` anywhere in the duty cycle.
 
 ## 11. Adapting to production hardware
 
-When Wensley's rev 1 board arrives:
+When the rev 1 production board is available:
 
 1. Bring-up per Appendix B of [OPERATING_PLAN](OPERATING_PLAN):
    power → flash blink → I²C → Wi-Fi → SPI flash → battery → soak test.
@@ -478,18 +477,18 @@ No firmware code changes required.
 
 ## 13. Troubleshooting
 
-| Symptom | Likely cause | Fix |
-|---------|--------------|-----|
-| `pio run` fails: board not found | First run downloads ESP32 toolchain | Wait, or run `pio platform install espressif32` |
-| Upload fails: "no serial port" | M5StickC needs to be powered on with USB-C | Press the power button; close other terminals on the port |
+| Symptom                                                    | Likely cause                                                      | Fix                                                                                                           |
+| ---------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `pio run` fails: board not found                           | First run downloads ESP32 toolchain                               | Wait, or run `pio platform install espressif32`                                                               |
+| Upload fails: "no serial port"                             | M5StickC needs to be powered on with USB-C                        | Press the power button; close other terminals on the port                                                     |
 | `pio device monitor` shows COM3/COM4 with no firmware logs | Monitor attached to Bluetooth virtual port, not the M5 USB bridge | Run `pio device list`, then monitor CH9102 COMx explicitly: `pio device monitor -e m5stickc-6886 --port COMx` |
-| `host_tests.exe` build fails on Windows | MinGW/MSVC mismatch | Use `cmake -G "MinGW Makefiles" ..` if PATH has MinGW |
-| Ingest server starts but no payloads arrive | Wrong `WEBHOOK_URL` host, or Windows firewall blocks port 8000 | Verify laptop's LAN IPv4; allow inbound on port 8000 |
-| Every cycle flagged as anomaly | Stale NVS weights from prior, very different environment | `pio run -e ... -t erase` to wipe NVS, then reflash |
-| Heartbeats absent while anomalies appear | Older firmware had heartbeat in a non-anomaly branch | Reflash latest firmware and verify serial line prints `hb=1` each cycle in test mode |
-| Heartbeats stop after first one | Wi-Fi associates but POST times out | Check ingest terminal for tracebacks; verify route from device to laptop |
-| `imu_fail_logged = 1` on every wake (production) | I²C pull-ups missing, or wrong SDA/SCL on board.h | Confirm pull-ups, verify against schematic |
-| Battery voltage reads 0.00 V (production) | ADC divider mis-wired or wrong pin | Compare schematic to `BAT_ADC_PIN` in `board.h` |
+| `host_tests.exe` build fails on Windows                    | MinGW/MSVC mismatch                                               | Use `cmake -G "MinGW Makefiles" ..` if PATH has MinGW                                                         |
+| Ingest server starts but no payloads arrive                | Wrong `WEBHOOK_URL` host, or Windows firewall blocks port 8000    | Verify laptop's LAN IPv4; allow inbound on port 8000                                                          |
+| Every cycle flagged as anomaly                             | Stale NVS weights from prior, very different environment          | `pio run -e ... -t erase` to wipe NVS, then reflash                                                           |
+| Heartbeats absent while anomalies appear                   | Older firmware had heartbeat in a non-anomaly branch              | Reflash latest firmware and verify serial line prints `hb=1` each cycle in test mode                          |
+| Heartbeats stop after first one                            | Wi-Fi associates but POST times out                               | Check ingest terminal for tracebacks; verify route from device to laptop                                      |
+| `imu_fail_logged = 1` on every wake (production)           | I²C pull-ups missing, or wrong SDA/SCL on board.h                 | Confirm pull-ups, verify against schematic                                                                    |
+| Battery voltage reads 0.00 V (production)                  | ADC divider mis-wired or wrong pin                                | Compare schematic to `BAT_ADC_PIN` in `board.h`                                                               |
 
 For long-form troubleshooting of tomorrow's session specifically, see the
 "Troubleshooting" section of
@@ -502,9 +501,8 @@ For long-form troubleshooting of tomorrow's session specifically, see the
 The product/legal/timeline context lives in the OPERATING_PLAN at the project
 root. Short version of what comes after tomorrow:
 
-- **Weeks 1–3:** kickoff + Russet House design-partner agreement (gates everything)
-- **Weeks 4–10:** parallel — Athmane deploys M5 rigs at Russet House for real
-  vibration data; Wensley designs rev 1 PCB
+- **Weeks 1–3:** kickoff + design-partner agreement (gates everything)
+- **Weeks 4–10:** parallel tracks — field data collection on M5 rigs and rev 1 PCB design
 - **Weeks 11–18:** rev 1 PCB bring-up + on-device ML port + soak test
 - **Weeks 19–28:** field POC at Russet House — 30 days continuous, at least
   one operator-confirmed anomaly
@@ -519,9 +517,9 @@ the same across this entire path; only the hardware target changes.
 
 Internal — to be decided at incorporation.
 
-## Maintainers
+## Team ownership
 
-- Athmane — firmware, ML, cloud, dashboard
-- Wensley — PCB, mechanical, sourcing, bring-up
+- Firmware / ML / cloud stack: software lead
+- PCB / mechanical / sourcing / bring-up: hardware lead
 
-Operating cadence: Saturday weekly sync. See OPERATING_PLAN §3.3.
+Operating cadence and governance are defined in OPERATING_PLAN §3.3.

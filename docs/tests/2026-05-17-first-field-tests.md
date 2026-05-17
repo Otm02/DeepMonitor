@@ -4,6 +4,10 @@ Vibration characterization on household objects before Russet House deployment.
 This is **not** an anomaly-validation test — the goal is to confirm the sensor captures
 distinguishable vibration signatures and the autoencoder produces sensible baselines.
 
+This document is the hands-on execution guide for validation sessions. Keep
+`README.md` for architecture/setup context and use this file for operational
+test procedure, runbook steps, and result logging.
+
 ---
 
 ## Goal and success criteria
@@ -29,6 +33,18 @@ distinguishable vibration signatures and the autoencoder produces sensible basel
 ---
 
 ## Pre-flight checklist (~30 min)
+
+Use this complete sequence before starting any object run:
+
+```powershell
+copy src\secrets.h.example src\secrets.h
+pip install -r tools\requirements.txt
+python tools\local_ingest.py
+pio device list
+# Choose USB-Enhanced-SERIAL CH9102 (M5StickC Plus2), not Bluetooth COM3/COM4
+pio run -e m5stickc-6886 -t upload --upload-port COM5
+pio device monitor -e m5stickc-6886 --port COM5
+```
 
 ### 1. Clone and configure secrets
 
