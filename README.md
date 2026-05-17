@@ -91,11 +91,6 @@ DeepMonitor/
 │   └── tests/
 │       └── 2026-05-17-first-field-tests.md   # Field-test execution protocol
 │
-├── .kiro/specs/predictive-maintenance-sensor/
-│   ├── requirements.md             # 10 numbered requirements
-│   ├── design.md                   # Module/data/property design
-│   └── tasks.md                    # Implementation phases (all checked)
-│
 └── build/                          # CMake build output (gitignored)
 ```
 
@@ -304,8 +299,7 @@ Expected output (last lines):
 
 The suite covers:
 
-- 16 RapidCheck property tests (one per design property in
-  [.kiro/specs/predictive-maintenance-sensor/design.md](.kiro/specs/predictive-maintenance-sensor/design.md))
+- 16 RapidCheck property tests (duty cycle, RTC, connectivity, inference, and related invariants)
 - Duty-cycle orchestration (warm wake / IMU failure / hard boot fresh / hard
   boot from NVS / NVS time trigger / heartbeat trigger)
 - RTC CRC round-trip + restore branching

@@ -1,8 +1,14 @@
 # Build artifacts
 build/
 .pio/
-.vscode/.browse.c_cpp.db*
-.vscode/ipch
+
+# Agent / IDE assistant artifacts (not part of product source)
+.kiro/
+.cursor/
+.vscode/
+agent-transcripts/
+.cursorrules
+*.cursorrules
 
 # Secrets (copy from src/secrets.h.example)
 src/secrets.h
