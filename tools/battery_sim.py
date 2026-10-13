@@ -26,7 +26,7 @@ from typing import Iterator
 class CurrentProfile:
     """Per-phase current draw in milliamps."""
     sleep_ua: float = 15.0          # deep sleep (µA → stored as µA, converted in calc)
-    active_ma: float = 28.0         # ESP32 + MPU-6050 sampling/inference
+    active_ma: float = 28.0         # ESP32 + MPU-6050 sampling + FFT/AE inference
     wifi_avg_ma: float = 160.0      # connect + POST averaged over burst window
     flash_write_ma: float = 4.0     # W25Q32 page program (negligible energy)
     battery_mah: float = 2500.0
@@ -53,7 +53,9 @@ class Scenario:
 
 def default_scenarios() -> list[Scenario]:
     sleep_mins = [1, 5, 15, 60, 240, 1440]
-    active_ss = [1, 5, 8]
+    # Active window with the FFT + autoencoder pipeline: 256 samples @ 200 Hz
+    # (~1.3 s) plus inference. 2.5 s / 5 s kept for slower-sampling comparisons.
+    active_ss = [1.3, 2.5, 5.0]
     # wifi_per_day: every cycle, 12h heartbeat (2/day), 24h (1/day), weekly (~0.14/day)
     wifi_cadences = [
         ("every_cycle", None),  # computed from sleep_min
@@ -184,6 +186,64 @@ def print_table(rows: list[dict], limit: int = 20) -> None:
         print(f"  ... and {len(rows) - limit} more (see CSV for full list)")
 
 
+def recommend_config(
+    profile: CurrentProfile,
+    max_latency_min: float,
+    battery_mah: float,
+    active_s: float = 1.3,
+    wifi_burst_s: float = 6.0,
+    anomaly_pct: float = 1.0,
+) -> dict:
+    """Pick the longest-life config whose detection latency (≈ sleep interval)
+    stays within max_latency_min and which still meets the day target."""
+    best = None
+    sleep_options = [1, 2, 5, 10, 15, 30, 60]
+    for sleep_min in sleep_options:
+        if sleep_min > max_latency_min:
+            continue
+        # Heartbeat roughly every 24 h regardless of sample cadence.
+        sc = Scenario(
+            sleep_min=sleep_min,
+            active_s=active_s,
+            wifi_per_day=1.0,
+            wifi_burst_s=wifi_burst_s,
+            anomaly_pct=anomaly_pct,
+            battery_mah=battery_mah,
+        )
+        r = estimate_days(sc, profile)
+        if best is None or r["est_days"] > best["est_days"]:
+            best = r
+    return best or {}
+
+
+def battery_curve(
+    profile: CurrentProfile,
+    battery_mah: float,
+    active_s: float = 1.3,
+    wifi_burst_s: float = 6.0,
+    anomaly_pct: float = 1.0,
+) -> list[dict]:
+    """Battery life vs sleep interval (for the dashboard trade-off chart)."""
+    curve = []
+    for sleep_min in [1, 2, 5, 10, 15, 30, 60, 120, 240]:
+        sc = Scenario(
+            sleep_min=sleep_min,
+            active_s=active_s,
+            wifi_per_day=1.0,
+            wifi_burst_s=wifi_burst_s,
+            anomaly_pct=anomaly_pct,
+            battery_mah=battery_mah,
+        )
+        r = estimate_days(sc, profile)
+        curve.append({
+            "sleep_min": sleep_min,
+            "detection_latency_min": sleep_min,
+            "est_days": r["est_days"],
+            "est_years": r["est_years"],
+        })
+    return curve
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="DeepMonitor battery life simulator")
     parser.add_argument("--output", "-o", type=Path, default=None, help="CSV output path")
@@ -196,6 +256,14 @@ def main() -> None:
         type=float,
         help="Evaluate one scenario",
     )
+    parser.add_argument(
+        "--recommend",
+        type=float,
+        metavar="MAX_LATENCY_MIN",
+        help="Recommend the longest-life config within a detection-latency budget",
+    )
+    parser.add_argument("--battery-mah", type=float, default=3000.0, help="Battery capacity for --recommend/--curve")
+    parser.add_argument("--curve", type=Path, default=None, help="Write battery-life vs sleep-interval JSON")
     args = parser.parse_args()
 
     profile = load_profile(args.profile)
@@ -211,6 +279,20 @@ def main() -> None:
         )
         result = estimate_days(sc, profile)
         print(json.dumps(result, indent=2))
+        return
+
+    if args.recommend is not None:
+        rec = recommend_config(profile, args.recommend, args.battery_mah)
+        print("Recommended config (longest life within "
+              f"{args.recommend:.0f} min detection latency on {args.battery_mah:.0f} mAh):")
+        print(json.dumps(rec, indent=2))
+        return
+
+    if args.curve is not None:
+        curve = battery_curve(profile, args.battery_mah)
+        args.curve.parent.mkdir(parents=True, exist_ok=True)
+        args.curve.write_text(json.dumps(curve, indent=2), encoding="utf-8")
+        print(f"Wrote battery trade-off curve to {args.curve}")
         return
 
     scenarios = default_scenarios()

@@ -1,0 +1,27 @@
+# systemd unit for running DeepMonitor 24/7 on a Raspberry Pi (or any Linux host)
+# without Docker. Assumes the repo is at /opt/deepmonitor and a virtualenv with
+# the backend dependencies lives at /opt/deepmonitor/.venv.
+#
+# Install:
+#   sudo cp deploy/deepmonitor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now deepmonitor
+#
+# Logs:  journalctl -u deepmonitor -f
+
+[Unit]
+Description=DeepMonitor predictive-maintenance server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/deepmonitor/server
+Environment=DEEPMONITOR_DB_URL=sqlite:////opt/deepmonitor/server/data/deepmonitor.db
+ExecStart=/opt/deepmonitor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

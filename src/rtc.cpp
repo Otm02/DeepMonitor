@@ -46,30 +46,31 @@ bool validate(const RtcBlock& block) {
     return computed == block.crc16;
 }
 
-WakeType restore_state(RtcBlock& block) {
-    if (validate(block)) {
-        return WakeType::WARM_WAKE;
-    }
-    if (persist::has_valid_data()) {
-        persist::load(block.ml_weights, block.norm_stats);
-        memset(&block.window_state, 0, sizeof(block.window_state));
-        block.duty_cycle_count = 0;
-        block.last_nvs_save_cycle = 0;
-        block.last_heartbeat_cycle = 0;
-        block.wifi_fail_count = 0;
-        block.http_retry_count = 0;
-        block.imu_fail_logged = 0;
-        return WakeType::HARD_BOOT_NVS;
-    }
-    ml::init_weights_random(block.ml_weights);
-    memset(&block.norm_stats, 0, sizeof(block.norm_stats));
-    memset(&block.window_state, 0, sizeof(block.window_state));
+static void reset_runtime_state(RtcBlock& block) {
+    memset(&block.recon, 0, sizeof(block.recon));
+    memset(block.last_features, 0, sizeof(block.last_features));
+    block.last_recon_error = 0.0f;
+    block.cfg = config::default_config();
     block.duty_cycle_count = 0;
     block.last_nvs_save_cycle = 0;
     block.last_heartbeat_cycle = 0;
     block.wifi_fail_count = 0;
     block.http_retry_count = 0;
     block.imu_fail_logged = 0;
+}
+
+WakeType restore_state(RtcBlock& block) {
+    if (validate(block)) {
+        return WakeType::WARM_WAKE;
+    }
+    if (persist::has_valid_data()) {
+        persist::load(block.ml_weights, block.norm_stats);
+        reset_runtime_state(block);
+        return WakeType::HARD_BOOT_NVS;
+    }
+    ml::init_weights_random(block.ml_weights);
+    memset(&block.norm_stats, 0, sizeof(block.norm_stats));
+    reset_runtime_state(block);
     return WakeType::HARD_BOOT_FRESH;
 }
 
@@ -85,7 +86,7 @@ void enter_deep_sleep(RtcBlock& block) {
     M5.Lcd.sleep();
 #endif
 
-    esp_deep_sleep(config::SLEEP_DURATION_US);
+    esp_deep_sleep(block.cfg.sleep_duration_us);
 #endif
 }
 

@@ -1,0 +1,16 @@
+build/
+.pio/
+.venv/
+venv/
+**/__pycache__/
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+server/data/
+tools/out/
+.git/
+.kiro/
+.cursor/
+.vscode/
+agent-transcripts/
+*.md

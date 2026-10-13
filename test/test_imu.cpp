@@ -27,13 +27,13 @@ TEST_F(ImuTest, InitFailsWhenMockSetToFail) {
     EXPECT_FALSE(imu::init());
 }
 
-TEST_F(ImuTest, SampleProducesExactly500Entries) {
+TEST_F(ImuTest, SampleProducesExactlySampleCountEntries) {
     imu::init();
     float vib[config::SAMPLE_COUNT];
     float temp[config::SAMPLE_COUNT];
     imu::sample(vib, temp);
 
-    // Verify all 500 entries are populated with finite values
+    // Verify all SAMPLE_COUNT entries are populated with finite values
     for (int i = 0; i < config::SAMPLE_COUNT; ++i) {
         EXPECT_TRUE(std::isfinite(vib[i])) << "vib[" << i << "] is not finite";
         EXPECT_TRUE(std::isfinite(temp[i])) << "temp[" << i << "] is not finite";

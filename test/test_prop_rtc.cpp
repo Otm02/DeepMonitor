@@ -2,6 +2,7 @@
 #include <rapidcheck.h>
 #include <rapidcheck/gtest.h>
 #include <cstring>
+#include <cstddef>
 
 #include "rtc.h"
 
@@ -18,8 +19,8 @@
 // Fill an RtcBlock with random bytes (except crc16) using RapidCheck generators
 static rtc::RtcBlock generateRandomBlock() {
     rtc::RtcBlock block;
-    // Fill the data portion (everything except crc16) with random bytes
-    const size_t data_len = sizeof(rtc::RtcBlock) - sizeof(uint16_t);
+    // Fill the CRC-covered portion (everything before crc16) with random bytes.
+    const size_t data_len = offsetof(rtc::RtcBlock, crc16);
     auto* bytes = reinterpret_cast<uint8_t*>(&block);
     for (size_t i = 0; i < data_len; i++) {
         bytes[i] = *rc::gen::inRange(0, 256);
@@ -53,7 +54,7 @@ RC_GTEST_PROP(CRC16RoundTrip, FlippedBitsDetectedAsCorruption, ()) {
     rtc::save(block);
 
     // Data portion size (everything before crc16)
-    const size_t data_len = sizeof(rtc::RtcBlock) - sizeof(uint16_t);
+    const size_t data_len = offsetof(rtc::RtcBlock, crc16);
     RC_PRE(data_len > 0);
 
     // Pick a random byte index in the data portion and a random bit to flip

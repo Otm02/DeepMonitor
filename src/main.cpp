@@ -1,8 +1,8 @@
 #include "config.h"
 #include "board.h"
 #include "imu.h"
+#include "features.h"
 #include "normalizer.h"
-#include "window.h"
 #include "ml.h"
 #include "rtc.h"
 #include "nvs.h"
@@ -14,8 +14,8 @@ extern rtc::RtcBlock rtc_block;
 
 static float s_vib[config::SAMPLE_COUNT];
 static float s_temp[config::SAMPLE_COUNT];
-static float s_norm_vib[config::SAMPLE_COUNT];
-static float s_norm_temp[config::SAMPLE_COUNT];
+static float s_features[config::FEATURE_DIM];
+static float s_norm_features[config::FEATURE_DIM];
 
 static ml::Weights s_saved_weights;
 
@@ -72,28 +72,28 @@ void run_duty_cycle(rtc::RtcBlock& block) {
 
     imu::sample(s_vib, s_temp);
 
-    normalizer::update(s_vib, s_temp, block.norm_stats, config::SMOOTHING_ALPHA);
-    normalizer::normalize(s_vib, s_temp, block.norm_stats, s_norm_vib, s_norm_temp);
-
-    float batch_mean_vib = 0.0f;
-    float batch_mean_temp = 0.0f;
-    for (int i = 0; i < config::SAMPLE_COUNT; ++i) {
-        batch_mean_vib += s_norm_vib[i];
-        batch_mean_temp += s_norm_temp[i];
+    // Extract rich vibration features (FFT + time/freq stats) from the waveform.
+    features::extract(s_vib, s_temp, s_features);
+    for (int i = 0; i < config::FEATURE_DIM; ++i) {
+        block.last_features[i] = s_features[i];
     }
-    batch_mean_vib /= config::SAMPLE_COUNT;
-    batch_mean_temp /= config::SAMPLE_COUNT;
-    window::append(block.window_state, batch_mean_vib, batch_mean_temp);
 
-    float ml_input[config::INPUT_DIM];
-    window::to_flat_array(block.window_state, ml_input);
+    // Adaptive per-feature normalization (skips learning for one cycle if frozen).
+    normalizer::update(s_features, block.norm_stats, config::SMOOTHING_ALPHA);
+    normalizer::normalize(s_features, block.norm_stats, s_norm_features);
 
-    ml::InferenceResult result = ml::infer(ml_input, block.ml_weights, config::ANOMALY_THRESHOLD);
+    // Autoencoder inference against the self-calibrating threshold.
+    const float threshold = ml::adaptive_threshold(block.recon, block.cfg.anomaly_k,
+                                                    config::ANOMALY_THRESHOLD);
+    ml::InferenceResult result = ml::infer(s_norm_features, block.ml_weights, threshold);
+    block.last_recon_error = result.reconstruction_error;
 
     if (result.is_anomaly) {
-        normalizer::freeze();
+        normalizer::freeze(block.norm_stats);
+    } else {
+        ml::recon_push(block.recon, result.reconstruction_error);
     }
-    ml::update_weights(ml_input, result, block.ml_weights);
+    ml::update_weights(s_norm_features, result, block.ml_weights);
 
     block.duty_cycle_count++;
 
@@ -105,28 +105,36 @@ void run_duty_cycle(rtc::RtcBlock& block) {
     const uint32_t ts_ms = 0;
 #endif
 
-    // Attempt to drain any buffered payloads from prior failed uploads
+    // Attempt to drain any buffered payloads from prior failed uploads.
     try_drain_flash_buffer();
 
     const bool heartbeat_due = connectivity::should_send_heartbeat(
-        block.duty_cycle_count, block.last_heartbeat_cycle);
+        block.duty_cycle_count, block.last_heartbeat_cycle, block.cfg.heartbeat_interval);
     const bool alert_due = result.is_anomaly;
 
     if (heartbeat_due || alert_due) {
         if (connectivity::connect_wifi(config::WIFI_TIMEOUT_MS)) {
+            // Control plane: pull the latest runtime config from the dashboard.
+            connectivity::fetch_config(config::CONFIG_URL_STR, block.cfg);
+
             if (heartbeat_due) {
                 connectivity::HeartbeatPayload hb;
                 hb.device_id = config::DEVICE_ID_STR;
                 hb.uptime_cycles = block.duty_cycle_count;
                 hb.battery_voltage = batt_v;
-                hb.anomaly_threshold = config::ANOMALY_THRESHOLD;
-                hb.norm_stats = block.norm_stats;
+                hb.anomaly_threshold = threshold;
+                hb.reconstruction_error = result.reconstruction_error;
+                hb.is_anomaly = alert_due ? 1 : 0;
                 hb.weight_magnitude_summary = ml::compute_weight_shift(
                     block.ml_weights, s_saved_weights);
                 hb.wifi_fail_count = block.wifi_fail_count;
                 hb.http_retry_count = block.http_retry_count;
-                hb.cycle_reconstruction_error = result.reconstruction_error;
-                hb.cycle_is_anomaly = alert_due ? 1 : 0;
+                hb.config_version = block.cfg.config_version;
+                hb.sleep_duration_us = block.cfg.sleep_duration_us;
+                hb.heartbeat_interval = block.cfg.heartbeat_interval;
+                hb.sample_rate_hz = block.cfg.sample_rate_hz;
+                hb.features = block.last_features;
+                hb.feature_count = config::FEATURE_DIM;
 
                 bool hb_sent = connectivity::send_heartbeat(hb, config::WEBHOOK_URL_STR);
                 buffer_last_payload_on_failure(hb_sent);
@@ -149,10 +157,12 @@ void run_duty_cycle(rtc::RtcBlock& block) {
                 alert.device_id = config::DEVICE_ID_STR;
                 alert.timestamp_ms = ts_ms;
                 alert.reconstruction_error = result.reconstruction_error;
-                alert.anomaly_threshold = config::ANOMALY_THRESHOLD;
+                alert.anomaly_threshold = threshold;
                 alert.mean_vib = raw_mean_vib;
                 alert.mean_temp = raw_mean_temp;
                 alert.battery_voltage = batt_v;
+                alert.features = block.last_features;
+                alert.feature_count = config::FEATURE_DIM;
 
                 bool alert_sent = connectivity::send_alert(alert, config::WEBHOOK_URL_STR);
                 buffer_last_payload_on_failure(alert_sent);

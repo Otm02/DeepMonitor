@@ -1,11 +1,21 @@
 # DeepMonitor
 
-ML-enabled vibration anomaly detection for food-grade industrial machinery.
-Single firmware tree that builds for three targets: a development M5StickC Plus2
-(with onboard MPU6886 or external MPU-6050) and the production ESP32-WROOM-32E
-PCB described in the OPERATING_PLAN.
+ML-enabled vibration anomaly detection for food-grade industrial machinery,
+shipped as a **complete local-first product**:
 
-> **Status:** pre-POC validation stage.
+- **Firmware** — one C++17 tree builds for three ESP32 targets. On-device it
+  extracts FFT + statistical vibration features and runs a compact **nonlinear
+  autoencoder** (online backprop) with a **self-calibrating adaptive threshold**.
+- **Server** ([`server/`](server/)) — FastAPI + SQLite that ingests device
+  telemetry, stores it, exposes a REST API, and serves the dashboard.
+- **Dashboard** ([`frontend/`](frontend/)) — React + Vite + ECharts UI with fleet
+  overview, live charts, FFT spectrograms, anomaly management, device controls
+  (a real control plane), reporting/exports, and a raw-data browser.
+
+Run the whole thing on a laptop or Raspberry Pi on the same Wi-Fi as the
+sensors. **See [docs/deployment.md](docs/deployment.md) for the runbook.**
+
+> **Status:** deployable v1 (firmware + server + dashboard validated end-to-end).
 
 ---
 
@@ -25,26 +35,33 @@ PCB described in the OPERATING_PLAN.
 12. [Going to Supabase](#12-going-to-supabase)
 13. [Troubleshooting](#13-troubleshooting)
 14. [Roadmap pointers](#14-roadmap-pointers)
+15. [Local server & dashboard](#15-local-server--dashboard)
 
 ---
 
 ## 1. What this is
 
-A small battery-powered device samples vibration and temperature from an IMU,
-normalizes the data adaptively, runs a Sanger's-Rule autoencoder on-device, and
-reports anomaly scores plus periodic heartbeats over Wi-Fi to a webhook
-(local Flask receiver today, Supabase later).
+A small battery-powered device bursts-samples vibration + temperature from an
+IMU, computes a 24-dim feature vector (time-domain stats + an in-house radix-2
+FFT band spectrum), z-score normalizes it adaptively, and runs a compact
+nonlinear autoencoder on-device. Reconstruction error is compared to an adaptive
+threshold (running mean + k·σ of recent normal errors) so each install
+self-calibrates. The device reports anomaly alerts + periodic heartbeats over
+Wi-Fi to the DeepMonitor server, and **pulls its runtime config** from the same
+server each connection (the dashboard control plane).
 
 Key constraints:
 
 - Static memory only (no heap during the duty cycle)
 - Deep sleep between cycles; RTC memory + CRC-16 for warm-wake state
 - NVS flash snapshots for long-term recovery
-- Event-driven Wi-Fi (anomaly alert or scheduled heartbeat)
+- Event-driven Wi-Fi (anomaly alert or scheduled heartbeat) + config pull
 - Local flash buffering when Wi-Fi/HTTP fails (production target only)
 
-The same firmware compiles unchanged for three hardware targets. See
-[OPERATING_PLAN](OPERATING_PLAN) for the broader product/legal/timeline context.
+The same firmware compiles unchanged for three hardware targets. The on-device
+model needs no training dataset — it learns the machine's normal signature in
+situ. See [docs/project-status.md](docs/project-status.md) for product context
+and [docs/deployment.md](docs/deployment.md) for deployment.
 
 ---
 
@@ -54,44 +71,47 @@ The same firmware compiles unchanged for three hardware targets. See
 DeepMonitor/
 ├── platformio.ini                  # Three build envs (m5stickc-6886, m5stickc-6050, esp32-wroom-6050)
 ├── CMakeLists.txt                  # Host-side test build (GoogleTest + RapidCheck)
+├── Dockerfile / docker-compose.yml # One-command deploy (server + bundled dashboard)
 ├── README.md                       # This file
-├── .gitignore                      # Ignores .pio/, secrets.h, tools/out/
 │
 ├── src/                            # Firmware (all C++17, namespace-modular)
 │   ├── board.h                     # Per-target capability defines & pin map
-│   ├── config.h                    # Tunable constants + WIFI/WEBHOOK macros
+│   ├── config.h                    # Tunable constants + runtime DeviceConfig + WIFI/WEBHOOK/CONFIG macros
 │   ├── secrets.h.example           # Copy to secrets.h and edit
 │   ├── imu.{h,cpp}                 # MPU6886 (M5) and MPU-6050 (external) backends
-│   ├── normalizer.{h,cpp}          # EMA mean/var, freeze on anomaly
-│   ├── window.{h,cpp}              # 16-entry circular sliding window
-│   ├── ml.{h,cpp}                  # Autoencoder + Sanger's Rule online learning
+│   ├── features.{h,cpp}            # In-house radix-2 FFT + 24-dim time/freq feature vector
+│   ├── normalizer.{h,cpp}          # Per-feature EWMA z-score, freeze on anomaly
+│   ├── ml.{h,cpp}                  # Nonlinear autoencoder (backprop) + adaptive threshold
 │   ├── rtc.{h,cpp}                 # RTC memory layout + CRC-16 validate/save
 │   ├── nvs.{h,cpp}                 # Preferences.h NVS save/load
-│   ├── connectivity.{h,cpp}        # Wi-Fi + HTTPClient + optional Bearer auth
+│   ├── connectivity.{h,cpp}        # Wi-Fi + HTTPClient + config pull + optional Bearer auth
 │   ├── power.{h,cpp}               # Battery voltage (M5 / ADC / mock)
 │   ├── flash_buffer.{h,cpp}        # W25Q32 ring buffer (production) / RAM shim (M5)
 │   └── main.cpp                    # Duty-cycle orchestration (setup() body)
 │
-├── test/                           # GoogleTest + RapidCheck host-side tests
-│   ├── test_sanity.cpp             # GTest/RapidCheck plumbing check
-│   ├── test_imu.cpp                # Mock IMU init/sample
-│   ├── test_duty_cycle.cpp         # Full duty-cycle orchestration tests
-│   ├── test_rtc_restore.cpp        # CRC validation + restore paths
-│   ├── test_power.cpp              # Power module host mock
-│   ├── test_flash_buffer.cpp       # Enqueue/drain round-trip
-│   └── test_prop_*.cpp             # 16 RapidCheck property tests (one per Design property)
+├── test/                           # GoogleTest + RapidCheck host-side tests (54 tests)
+│   ├── test_prop_features.cpp      # FFT vs DFT, RMS/crest, constant-signal
+│   ├── test_prop_ml.cpp            # AE inference, backprop reduces error, LR schedule, adaptive threshold
+│   ├── test_prop_normalizer.cpp    # EWMA formula, z-score, freeze
+│   └── test_*.cpp                  # imu / duty-cycle / rtc / nvs / connectivity / power / flash buffer
+│
+├── server/                         # FastAPI + SQLite backend
+│   ├── app/                        # main, db, models, ingest, api, import_csv
+│   ├── tests/                      # pytest API suite
+│   └── requirements.txt
+│
+├── frontend/                       # React + Vite + TS + ECharts dashboard
+│   └── src/                        # pages: Overview, DeviceDetail, Anomalies, Controls, Reports, DataBrowser
 │
 ├── tools/                          # Laptop-side Python utilities (Python 3.10+)
-│   ├── requirements.txt            # flask (the only dep)
-│   ├── local_ingest.py             # Flask receiver → per-device CSV under tools/out/captures/
+│   ├── local_ingest.py             # Legacy Flask receiver → CSV (superseded by server/)
 │   ├── quick_analysis.py           # Compare CSV captures across objects
-│   └── battery_sim.py              # Sweep duty-cycle configs for ≥1-year battery life
+│   ├── battery_sim.py              # Battery sweep + --recommend + --curve
+│   └── device_sim.py               # Device simulator → POSTs feature payloads to the server
 │
-├── docs/
-│   └── tests/
-│       └── 2026-05-17-first-field-tests.md   # Field-test execution protocol
-│
-└── build/                          # CMake build output (gitignored)
+├── deploy/deepmonitor.service      # systemd unit (Raspberry Pi, no Docker)
+├── docs/deployment.md              # Deployment runbook
+└── build/, .pio/, frontend/dist/   # Build outputs (gitignored)
 ```
 
 ---
@@ -128,29 +148,27 @@ notepad src\secrets.h
 #   Set WIFI_SSID/WIFI_PASS
 #   Set WEBHOOK_URL = "http://<laptop-lan-ip>:8000/ingest"
 
-# 2) Install local tooling
-pip install -r tools\requirements.txt
+# 2) Start the server + dashboard (see docs/deployment.md for full runbook)
+docker compose up -d --build
+#   Dashboard + API on http://<laptop-lan-ip>:8000  (ingest at POST /ingest)
+#   Or from source: cd server && uvicorn app.main:app  +  cd frontend && npm run build
 
-# 3) Start local ingest receiver
-python tools\local_ingest.py
-#   Serves POST /ingest and GET /health
-
-# 4) Flash firmware
+# 3) Flash firmware
 pio device list
 #   Use USB-Enhanced-SERIAL CH9102 (M5StickC Plus2), not Bluetooth COM3/COM4.
 pio run -e m5stickc-6886 -t upload --upload-port COM5
 
-# 5) Optional serial diagnostics
+# 4) Optional serial diagnostics
 pio device monitor -e m5stickc-6886 --port COM5
 
-# 6) Analyze captured payloads
-python tools\quick_analysis.py
+# 5) Or test the whole pipeline without hardware
+python tools\device_sim.py --url http://localhost:8000 --device-id M5-SIM1 --cycles 30
 ```
 
-For battery-life planning of the production PCB:
+For battery-life planning:
 
 ```powershell
-python tools\battery_sim.py --output tools\out\battery_results.csv
+python tools\battery_sim.py --recommend 15 --battery-mah 3000
 ```
 
 ---
@@ -257,22 +275,24 @@ build_flags =
 
 ### Tunable constants ([`src/config.h`](src/config.h))
 
-| Constant                                           | Default             | What it controls                                     |
-| -------------------------------------------------- | ------------------- | ---------------------------------------------------- |
-| `SLEEP_DURATION_US`                                | 300 000 000 (5 min) | Deep-sleep length between samples                    |
-| `SAMPLE_COUNT` × `SAMPLE_RATE_HZ`                  | 500 × 100 Hz (5 s)  | Per-cycle sampling window                            |
-| `WINDOW_SIZE`                                      | 16                  | Sliding window of duty cycles fed to the autoencoder |
-| `LATENT_DIM`                                       | 4                   | Autoencoder bottleneck (compression 32 → 4)          |
-| `ANOMALY_THRESHOLD`                                | 0.03                | Reconstruction-error cutoff                          |
-| `SMOOTHING_ALPHA`                                  | 0.1                 | EMA factor for normalizer mean/var                   |
-| `LR_INITIAL` / `LR_DECAY_RATE` / `LR_RESET_STREAK` | 0.01 / 0.001 / 10   | Sanger's-Rule learning rate schedule                 |
-| `NVS_SAVE_INTERVAL`                                | 288 cycles (~24 h)  | Periodic flash snapshot                              |
-| `WEIGHT_SHIFT_THRESHOLD`                           | 0.5                 | Triggers an NVS save on large model drift            |
-| `HEARTBEAT_INTERVAL`                               | 144 cycles (~12 h)  | Wi-Fi heartbeat cadence                              |
-| `WIFI_TIMEOUT_MS`                                  | 10 000              | Per-attempt Wi-Fi connect timeout                    |
+| Constant                                           | Default              | What it controls                                          |
+| -------------------------------------------------- | -------------------- | --------------------------------------------------------- |
+| `SLEEP_DURATION_US`                                | 900 000 000 (15 min) | Deep-sleep length between samples (battery-optimal)       |
+| `SAMPLE_COUNT` × `SAMPLE_RATE_HZ`                  | 256 × 200 Hz (~1.3 s)| Per-cycle sampling burst (Nyquist 100 Hz)                 |
+| `FFT_SIZE` / `FREQ_BANDS`                          | 256 / 14             | Radix-2 FFT length and number of band-energy features     |
+| `FEATURE_DIM`                                      | 24                   | Feature vector: 6 time + 14 band + 3 spectral + 1 temp    |
+| `AE_HIDDEN_DIM` / `AE_LATENT_DIM`                  | 16 / 6               | Autoencoder hidden + bottleneck width                     |
+| `ANOMALY_THRESHOLD` / `ANOMALY_K`                  | 0.10 (floor) / 3.0   | Adaptive threshold = max(floor, mean + k·σ)               |
+| `RECON_HISTORY` / `RECON_WARMUP`                   | 32 / 8               | Recon-error ring size / cycles before threshold engages   |
+| `SMOOTHING_ALPHA`                                  | 0.05                 | Per-feature EWMA factor                                   |
+| `LR_INITIAL` / `LR_DECAY_RATE` / `LR_RESET_STREAK` | 0.01 / 0.001 / 10    | SGD learning-rate schedule                                |
+| `NVS_SAVE_INTERVAL`                                | 96 cycles (~24 h)    | Periodic flash snapshot                                   |
+| `HEARTBEAT_INTERVAL`                               | 96 cycles (~24 h)    | Wi-Fi heartbeat cadence                                   |
+| `WIFI_TIMEOUT_MS`                                  | 10 000               | Per-attempt Wi-Fi connect timeout                         |
 
-For live bring-up, you can temporarily use `HEARTBEAT_INTERVAL = 1` and shorter
-sleep while testing. Restore production-like values afterward.
+`SLEEP_DURATION_US`, `HEARTBEAT_INTERVAL`, `SAMPLE_RATE_HZ`, and `ANOMALY_K` are
+also **runtime-tunable** from the dashboard (the device pulls them via
+`CONFIG_URL`); the values above are the compile-time defaults.
 
 ---
 
@@ -293,17 +313,18 @@ cmake --build . --config Release
 Expected output (last lines):
 
 ```
-[==========] 45 tests from 24 test suites ran. (~600 ms total)
-[  PASSED  ] 45 tests.
+[==========] 54 tests from 29 test suites ran. (~1.6 s total)
+[  PASSED  ] 54 tests.
 ```
 
 The suite covers:
 
-- 16 RapidCheck property tests (duty cycle, RTC, connectivity, inference, and related invariants)
-- Duty-cycle orchestration (warm wake / IMU failure / hard boot fresh / hard
-  boot from NVS / NVS time trigger / heartbeat trigger)
-- RTC CRC round-trip + restore branching
-- Power and flash-buffer host mocks
+- Feature extraction (FFT vs naive DFT, RMS/crest relationship, DC-only signal)
+- Autoencoder (inference matches a reference forward pass, backprop reduces
+  reconstruction error, LR decay/reset, adaptive-threshold warmup/tracking)
+- Per-feature normalizer (EWMA formula, z-score, freeze-for-one-cycle)
+- Duty-cycle orchestration, RTC CRC round-trip + restore, NVS round-trip,
+  connectivity payloads + config-JSON parsing, power and flash-buffer mocks
 
 Add `--gtest_filter=DutyCycleTest.*` to run a subset.
 
@@ -349,27 +370,30 @@ python tools\quick_analysis.py --dir tools\out\captures
 Reports per device: row count, anomaly count, mean/std of `mean_vibration`,
 mean/std/p95 of `reconstruction_error`, mean battery voltage.
 
-### `battery_sim.py` — battery-life sweep
+### `battery_sim.py` — battery-life sweep & recommendation
 
-Evaluates per-cycle current draw for ~1900 production-hardware configurations:
+Models per-cycle current draw for the new ~1.3 s active window:
 
 ```powershell
-python tools\battery_sim.py                                 # console summary
-python tools\battery_sim.py --output tools\out\battery_results.csv
-python tools\battery_sim.py --single 60 5 1                 # one config: 60 min sleep, 5 s active, 1 wifi/day
-python tools\battery_sim.py --profile my_profile.json       # override the current model
+python tools\battery_sim.py                                  # console summary table
+python tools\battery_sim.py --recommend 15 --battery-mah 3000  # best config ≤15 min latency
+python tools\battery_sim.py --curve tools\out\battery_curve.json  # trade-off curve (dashboard uses this)
+python tools\battery_sim.py --single 15 1.3 1                # one config: 15 min sleep, 1.3 s active, 1 wifi/day
 ```
 
-Output includes:
+Headline: the shipped battery-optimal default (15-min sleep, ~1.3 s active,
+24 h heartbeat) gives **~3.8 years on a 3000 mAh 18650**. The dashboard
+**Controls** tab shows the same curve and an estimated life per sleep interval.
 
-- Total scenarios and how many pass the ≥365-day target
-- Best passing config (lowest average current)
-- Reference line for the current firmware defaults (5 min sleep, 12 h heartbeat)
-- Top-N table sorted by estimated days
+### `device_sim.py` — device simulator
 
-The headline result with default parts: the **current** duty-cycle settings give
-~6 months on a 2500 mAh 18650. To clear the 1-year target, sleep needs to
-stretch (60 min+) and Wi-Fi cadence drops to ~1/day.
+POSTs realistic 24-dim feature payloads (with occasional anomalies) to the
+server and exercises the control plane — useful for end-to-end testing without
+hardware:
+
+```powershell
+python tools\device_sim.py --url http://localhost:8000 --device-id M5-SIM1 --cycles 30
+```
 
 ---
 
@@ -386,17 +410,17 @@ flowchart TD
     RestoreNVS --> InitIMU
     Fresh --> InitIMU
     InitIMU -->|Fail| LogFail[Log fail → sleep]
-    InitIMU -->|OK| Sample[Sample 500 @ 100Hz]
-    Sample --> Norm[Adaptive EMA normalize]
-    Norm --> Window[Append to 16-cycle window]
-    Window --> Infer[Encode → decode → MSE]
-    Infer --> Anomaly{MSE > threshold?}
+    InitIMU -->|OK| Sample[Burst-sample 256 @ 200Hz]
+    Sample --> Feat[FFT + time/freq features 24-dim]
+    Feat --> Norm[Per-feature EWMA z-score normalize]
+    Norm --> Infer[Autoencoder encode → decode → MSE]
+    Infer --> Anomaly{MSE > adaptive threshold?}
     Anomaly -->|Yes| Freeze[Freeze normalizer, skip weight update]
-    Anomaly -->|No| Sanger[Sanger's Rule weight update]
+    Anomaly -->|No| Train[Backprop SGD + push recon to threshold ring]
     Freeze --> Conn{Wi-Fi needed?}
-    Sanger --> Conn
-    Conn -->|Anomaly| Alert[POST alert JSON]
-    Conn -->|Heartbeat due| HB[POST heartbeat JSON]
+    Train --> Conn
+    Conn -->|Anomaly| Alert[POST alert JSON + features]
+    Conn -->|Heartbeat due| HB[POST heartbeat + pull config]
     Conn -->|No| NVSCheck[NVS save trigger check]
     Alert -->|Fail| Buffer[Enqueue to flash buffer]
     HB -->|Fail| Buffer
@@ -411,22 +435,23 @@ flowchart TD
 
 | Module                    | Owns                                                                            |
 | ------------------------- | ------------------------------------------------------------------------------- |
-| `imu`                     | Hardware init, 500-sample @ 100 Hz fill, vibration magnitude                    |
-| `normalizer`              | Per-batch EMA stats, normalize, freeze-on-anomaly flag                          |
-| `window`                  | 16-entry circular buffer of `(mean_vib, mean_temp)` summaries                   |
-| `ml`                      | Autoencoder forward pass, MSE, Sanger's-Rule weight update, weight-shift metric |
+| `imu`                     | Hardware init, 256-sample @ 200 Hz burst, vibration magnitude                   |
+| `features`                | In-house radix-2 FFT, time/freq feature vector (24-dim)                          |
+| `normalizer`              | Per-feature EWMA mean/var, z-score, freeze-on-anomaly flag                       |
+| `ml`                      | Nonlinear autoencoder forward/backprop, adaptive threshold, weight-shift metric |
 | `rtc`                     | RTC memory struct + CRC-16, warm/hard wake routing, deep sleep entry            |
 | `persist` (`nvs.*` files) | Preferences.h save/load, time-based and weight-shift triggers                   |
-| `connectivity`            | Wi-Fi associate, HTTP POST with optional `Authorization: Bearer`, retry counter |
+| `connectivity`            | Wi-Fi associate, HTTP POST + config GET, optional `Authorization: Bearer`       |
 | `power`                   | Battery voltage abstraction (M5 / ADC / mock)                                   |
 | `flash_buffer`            | W25Q32 ring of failed payloads, drained on next successful Wi-Fi                |
 | `main`                    | Orchestrates the duty cycle; no logic of its own                                |
 
 ### Memory budget
 
-Total RTC block is statically sized at ~1.2 KB (out of 8 KB ESP32 RTC slow
-memory). A `static_assert` in [`src/rtc.cpp`](src/rtc.cpp) enforces the budget.
-No `new`/`malloc`/`String` anywhere in the duty cycle.
+The RTC block (weights ~4 KB + feature stats + recon ring + runtime config) is
+statically sized at ~4.6 KB, under the 8 KB ESP32 RTC slow-memory budget. A
+`static_assert` in [`src/rtc.cpp`](src/rtc.cpp) enforces it. No
+`new`/`malloc`/`String` anywhere in the duty cycle.
 
 ---
 
@@ -434,7 +459,7 @@ No `new`/`malloc`/`String` anywhere in the duty cycle.
 
 When the rev 1 production board is available:
 
-1. Bring-up per Appendix B of [OPERATING_PLAN](OPERATING_PLAN):
+1. Bring-up sequence:
    power → flash blink → I²C → Wi-Fi → SPI flash → battery → soak test.
 2. Confirm pin assignments in [`src/board.h`](src/board.h) match the
    schematic. If different, edit `BOARD_ESP32WROOM_6050` block only.
@@ -492,28 +517,62 @@ For long-form troubleshooting of tomorrow's session specifically, see the
 
 ## 14. Roadmap pointers
 
-The product/legal/timeline context lives in the OPERATING_PLAN at the project
-root. Short version of what comes after tomorrow:
+See [docs/project-status.md](docs/project-status.md) for the full status and
+post-v1 checklist. Near-term product track:
 
-- **Weeks 1–3:** kickoff + design-partner agreement (gates everything)
-- **Weeks 4–10:** parallel tracks — field data collection on M5 rigs and rev 1 PCB design
-- **Weeks 11–18:** rev 1 PCB bring-up + on-device ML port + soak test
-- **Weeks 19–28:** field POC at Russet House — 30 days continuous, at least
-  one operator-confirmed anomaly
-- **Weeks 28–32:** POC report, demo video, investor deck
+- Design-partner agreement and field data collection on M5StickC rigs
+- Rev 1 production PCB bring-up (`esp32-wroom-6050`) + soak test
+- Field POC — 30 days continuous, at least one operator-confirmed anomaly
+- POC report, demo video, investor materials
 
 The autoencoder, deep-sleep duty cycle, RTC layout, and connectivity all stay
-the same across this entire path; only the hardware target changes.
+the same across this path; only the hardware target changes.
+
+---
+
+## 15. Local server & dashboard
+
+The [`server/`](server/) (FastAPI + SQLite) ingests device telemetry and serves
+the [`frontend/`](frontend/) React dashboard from the same origin. Full setup,
+Docker, and Raspberry Pi instructions are in
+[docs/deployment.md](docs/deployment.md).
+
+```powershell
+# Docker (recommended) — builds dashboard + serves API on :8000
+docker compose up -d --build
+
+# From source (dev)
+cd server; python -m venv .venv; .\.venv\Scripts\activate
+pip install -r requirements.txt; uvicorn app.main:app --port 8000
+cd ..\frontend; npm install; npm run dev        # http://localhost:5173 (proxies API)
+```
+
+Dashboard tabs:
+
+- **Overview** — every device with status, battery, recon error, last-seen.
+- **Device detail** — recon-error vs adaptive threshold, RMS/temperature,
+  battery, latest FFT spectrum, and a band-energy spectrogram over time.
+- **Anomalies** — filter, acknowledge, and annotate events by severity.
+- **Controls** — push runtime config (sleep, heartbeat, sample rate,
+  sensitivity) to a device with pending-vs-applied state + estimated battery
+  life and the trade-off curve.
+- **Reports** — date-range summaries, CSV export, printable PDF view.
+- **Data** — raw readings table with filter/paginate/download.
+
+Key API endpoints (`GET /docs` for the full OpenAPI): `POST /ingest`,
+`/api/devices`, `/api/devices/{id}/readings`, `/api/devices/{id}/config`
+(GET = device pull, PUT = dashboard push), `/api/anomalies`,
+`/api/reports/summary`, `/api/reports/export.csv`, `/api/battery/curve`.
+
+Migrate legacy CSV captures into the database:
+
+```powershell
+cd server; python -m app.import_csv ..\tools\out\captures
+```
 
 ---
 
 ## License
 
-Internal — to be decided at incorporation.
-
-## Team ownership
-
-- Firmware / ML / cloud stack: software lead
-- PCB / mechanical / sourcing / bring-up: hardware lead
-
-Operating cadence and governance are defined in OPERATING_PLAN §3.3.
+License TBD. Source is published for review; rights reserved until a license
+is chosen.

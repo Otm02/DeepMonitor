@@ -3,15 +3,18 @@
 
 #include <cstdint>
 #include <cstddef>
+#include "config.h"
 #include "normalizer.h"
-#include "window.h"
 #include "ml.h"
 
 namespace rtc {
     struct RtcBlock {
-        normalizer::Stats norm_stats;
-        window::WindowState window_state;
-        ml::Weights ml_weights;
+        normalizer::Stats norm_stats;       // per-feature baseline
+        ml::Weights ml_weights;             // autoencoder parameters
+        ml::ReconTracker recon;             // adaptive-threshold history
+        config::DeviceConfig cfg;           // runtime config (control plane)
+        float last_features[config::FEATURE_DIM]; // most recent feature vector (for telemetry)
+        float last_recon_error;             // most recent reconstruction error
         uint32_t duty_cycle_count;
         uint32_t last_nvs_save_cycle;
         uint32_t last_heartbeat_cycle;

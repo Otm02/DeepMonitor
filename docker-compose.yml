@@ -1,0 +1,16 @@
+services:
+  deepmonitor:
+    build: .
+    image: deepmonitor:latest
+    container_name: deepmonitor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist the SQLite database across container restarts/upgrades.
+      - deepmonitor-data:/app/server/data
+    environment:
+      DEEPMONITOR_DB_URL: "sqlite:////app/server/data/deepmonitor.db"
+
+volumes:
+  deepmonitor-data:

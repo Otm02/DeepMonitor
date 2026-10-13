@@ -27,8 +27,8 @@ FetchContent_MakeAvailable(googletest rapidcheck)
 # ── Source files (firmware modules, compiled for host) ───────────────────────
 set(FIRMWARE_SOURCES
     src/imu.cpp
+    src/features.cpp
     src/normalizer.cpp
-    src/window.cpp
     src/ml.cpp
     src/rtc.cpp
     src/nvs.cpp
